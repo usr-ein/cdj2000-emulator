@@ -55,7 +55,8 @@ fi
 set -- \
     "$REPO/patches/qemu-sh-intc-priority-imask.patch" \
     "$REPO/patches/qemu-sh-intc-priority-order.patch" \
-    "$REPO/patches/qemu-sh-tmu-stop-reset.patch"
+    "$REPO/patches/qemu-sh-tmu-stop-reset.patch" \
+    "$REPO/patches/qemu-sh-tmu-catch-up.patch"
 applied=0
 index=0
 for patch in "$@"; do
