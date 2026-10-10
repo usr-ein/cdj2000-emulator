@@ -123,14 +123,22 @@ one-shot kqueue timer ends a `poll` 20-70 us after its deadline here.
 channel that underflows while `TCR.UNF` is still set, with its interrupt
 enabled, counts the underflow, and when the guest clears `UNF` the flag stays
 set until it has cleared it once for each: the ticks come late, but none is
-lost. On the chip a tick handler is never a period late; here the host
-decides when the timer's callback and the guest's handler run, and a host
-busy with other work keeps MAIN from its 1 ms tick for longer than that. At
-most 1 000 are kept; stopping the channel, `UNIE` clear or a reset drop them.
-Measured with the macOS patch, idle NXS, while twelve busy processes held all
-twelve cores of an M2 Pro for 30 s: keep-alive intervals of 3.4-4.2 s (mean
-2.51 s over the 70 s window) without it, 2.1-3.2 s (mean 2.14 s) with it;
-2.00 s before and after the burst either way.
+lost. On the chip a tick handler is never a period late. Here the host decides
+when the timer's callback and the guest's handler run: QEMU's main loop runs
+two expiries in one pass when it wakes late, and a long MMIO access keeps the
+vCPU from the handler for longer than a period (the NXS's synchronous DSP runs
+inside MAIN's HPI accesses). At most 1 000 are kept. Stopping the channel,
+clearing `UNIE` or a reset drops them, and a `UNF` set only for one of them
+goes with them, since the chip's own would read 0: a handler that clears `UNF`
+and then stops its channel takes no interrupt after the stop. A host's delay and
+a guest's own look alike: a guest that keeps the interrupt masked for more than
+a period gets those underflows afterwards too, where the chip merges them.
+Measured on an
+M2 Pro (macOS), stock NXS 1.44: MAIN alone saw 2.9% of TMU0's underflows (97%
+arrived while `UNF` was still set), 99.8% with the patch. On the NXS series
+(#33-#38) with its synchronous DSP, the RTOS saw 71% of them and sent its 2 s
+Pro DJ Link keep-alive every 2.82 s; with the patch it saw all of them and
+sent it every 2.000 s, where a real NXS sends it every 2.003 s.
 
 ### What each one costs
 
