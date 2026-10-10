@@ -143,7 +143,7 @@ static void cdj_input_note_event(int64_t now, const char *format, ...)
 }
 
 /* The lamps as the board last summarised them (cdj_input_set_lamps). */
-static char cdj_input_lamps[768] = "-";
+static char cdj_input_lamps[1536] = "-";
 
 #define CDJ_INPUT_MEDIA 4
 
