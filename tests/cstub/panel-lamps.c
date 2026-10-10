@@ -8,6 +8,7 @@
  *     frame <guest ms> <payload hex, 22 bytes>      -> its log lines, then
  *                                                      "changed" if anything did
  *     summary                                       -> "summary <what state says>"
+ *     names 2000|nxs                                -> "name <byte> <mask> <name>" each
  */
 #include "cdj2000_lamps.h"
 
@@ -70,6 +71,14 @@ int main(void)
 
             cdj_lamps_summary(&lamps, summary, sizeof(summary));
             printf("summary %s\n", summary);
+        } else if (!strcmp(verb, "names")) {
+            unsigned count;
+            const CdjPanelLamp *names = cdj_lamps_names(!strcmp(first, "nxs"), &count);
+
+            for (unsigned i = 0; i < count; i++) {
+                printf("name %u 0x%02x %s\n", names[i].byte, names[i].mask,
+                       names[i].name);
+            }
         } else {
             fprintf(stderr, "panel-lamps: no verb %s\n", verb);
             return 2;

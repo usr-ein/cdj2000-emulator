@@ -106,6 +106,56 @@ def test_tracking_alone_logs_nothing(driver):
     assert out == ["changed", "changed"]
 
 
+@pytest.mark.parametrize("panel", ["2000", "nxs"])
+def test_each_name_is_its_own_bits(driver, panel):
+    """No two lamps share a bit, a name or a byte beyond the payload; a
+    multi-bit lamp is one field of adjacent bits."""
+    names = [line.split()[1:] for line in drive(driver, [f"names {panel}"])]
+    assert names
+    taken: dict[tuple[int, int], str] = {}
+    for byte, mask, name in names:
+        byte, mask = int(byte), int(mask, 16)
+        assert byte < PAYLOAD and mask
+        low = mask & -mask
+        assert mask in (low, 3 * low), f"{name}: {mask:#04x} is not one or two adjacent bits"
+        for bit in range(8):
+            if mask & (1 << bit):
+                assert (byte, bit) not in taken, f"{name} and {taken[(byte, bit)]}"
+                taken[(byte, bit)] = name
+    assert len({name for _, _, name in names}) == len(names)
+
+
+def test_the_nxs_names_its_own_lamps(driver):
+    """The NXS lays the lamps out anew: PLAY/PAUSE is 2.6 there, and 1.5,
+    the CDJ-2000's PLAY/PAUSE, is a bit nothing has been seen to light."""
+    lit = frame(b1=0x10 | 0x20, b2=0x40 | 0x20, b3=0x40, b4=0x30 | 0x04,
+                b5=0x01, b6=0xc0, b13=0x0c | 0x01)
+    out = drive(driver, ["init nxs track", f"frame 0 {lit}", "summary",
+                         "init 2000 track", f"frame 0 {frame(b1=0x20)}", "summary",
+                         "init nxs track", f"frame 0 {frame(b1=0x20)}", "summary"])
+    assert summaries(out) == [
+        "QUANTIZE:on,CUE:on,PLAY_PAUSE:on,SOURCE_REKORDBOX:1,SOURCE_SD:1,"
+        "SOURCE_USB:3,BROWSE:1,LOOP_MODE:3,SYNC:1,MASTER:3",
+        "PLAY_PAUSE:on",
+        "-"]
+
+
+def test_the_nxs_master_lamp_moves_from_one_deck_to_the_other(driver):
+    """MASTER as two NXSs on a link showed it: 0x0d (master) and 0x05."""
+    out = drive(driver, ["init nxs log", f"frame 0 {frame(b13=0x0d)}", "summary",
+                         f"frame 5000 {frame(b13=0x05)}", "summary"])
+    assert summaries(out) == ["SYNC:1,MASTER:3", "SYNC:1,MASTER:1"]
+    assert "cdj2000-lamp t=5.000 MASTER 1" in out
+
+
+def test_the_nxs_jog_display_positions_are_not_lamps(driver):
+    """Bytes 7, 9 and 10 move with the playhead; they are not followed even
+    when every unnamed bit is."""
+    out = drive(driver, ["init nxs all", f"frame 0 {frame()}",
+                         f"frame 100 {frame(b7=0x4c, b9=0x2a, b10=0x13)}", "summary"])
+    assert out == ["changed", "summary -"]
+
+
 def test_all_names_the_unnamed_bits_by_byte_and_bit(driver):
     """2.4 is a bit of the CDJ-2000's lamp bytes that nothing named."""
     out = drive(driver, ["init 2000 all", f"frame 0 {frame()}",

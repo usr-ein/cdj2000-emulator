@@ -89,6 +89,89 @@ static const CdjPanelLamp cdj2000_lamp_names[] = {
 /* The bytes whose other bits CDJ_PANEL_LAMPS=all names by byte.bit. */
 static const uint8_t cdj2000_lamp_bytes[] = { 0, 1, 2, 3, 4, 5, 7 };
 
+/*
+ * The NXS's panel lamps.  NXS MAIN (1.44) sends its panel the same frame the
+ * same way -- 24 bytes ending in 0x8f, from 0xa4501018 through DMA channel
+ * 4 -- built by 0x042f83cc out of the lamp state bytes at 0x051e2318 (staging
+ * 0x04d120b4), from the same L bits as the CDJ-2000's where both decks have
+ * the lamp, laid out anew:
+ * - byte 0 and 1.0: the hot cues, bit for bit as the CDJ-2000's.  REC MODE
+ *   (18.1) lit 0.1/0.4/0.7; A stored lit 0.0; a running loop stored in B
+ *   lit 0.5.  0.2 and 1.0 are C's and A's loop bits by that grouping.
+ * - byte 1: LOOP IN/OUT (L2.0/L2.1: lit while a loop can be set, IN blinking
+ *   after IN, both blinking while one plays), SLIP (L0.1), QUANTIZE (L11.7),
+ *   REV (L2.2: the lever, `dev switch rev on`), and the SD indicator (L1.4),
+ *   blinking with the SD source lamp while a track from the card is loaded.
+ * - byte 2: MASTER TEMPO (L1.7), CUE (L2.3: on paused at the cue point,
+ *   blinking paused elsewhere), PLAY/PAUSE (L2.4: on playing, blinking
+ *   paused), RELOOP/EXIT (L2.5: lit once there is a loop), and L1.6, which
+ *   began blinking on EJECT (20.6) with no disc in: the disc drive is not
+ *   modelled, so whether it is the key's lamp or the slot's is not known.
+ * - byte 3: TEMPO RESET (L2.6), JOG MODE's CDJ and VINYL lamps (L1.1/L1.2;
+ *   VINYL came on with the jog display's VINYL mark), the rotary selector
+ *   (L1.5: blinking while a track loads), and REKORDBOX (bits 7..6 = L4 bits
+ *   7..6), a 2-bit source lamp like the others.
+ * - bytes 4 and 5: L7 and L6, the four sources and the four browse keys, as
+ *   the CDJ-2000's bytes 3 and 4.  1 = available, 3 = selected or shown; the
+ *   source a loaded track came from blinks between the two.
+ * - byte 6: L5, four 2-bit fields.  Bits 7..6 follow LOOP MODE (17.1): 3
+ *   while a loop runs (from LOOP MODE's own 4-beat loop or from IN/OUT), 1
+ *   otherwise.
+ * - byte 8: L+35, the jog display's marks, as the CDJ-2000's byte 7.
+ * - byte 13: L4 bits 3..0, MASTER (bits 3..2) and SYNC (bits 1..0), 2 bits
+ *   each, 1 = available, 3 = on.  Two NXSs on one link: MASTER pressed on
+ *   one moved its 13.3 on and the other's off, and back.
+ * Every name followed its key on 2026-10-10, on NXSs booted by TriMixxx's
+ * `pi-qemu cdj`, with CDJ_PANEL_TX_TRACE.  Still unnamed: 1.5 (L0.0), 2.4
+ * (from L1.6), byte 6's other fields (bits 1..0 fall dark in SLIP and blink
+ * near a track's end, bits 5..4 stay 3), and 12.0 (set in SLIP).  Bytes 7, 9
+ * and 10 are jog display positions (the cue mark, the playhead and SLIP's
+ * playhead), not lamps.
+ */
+static const CdjPanelLamp nxs_lamp_names[] = {
+    { 0, 0x01, "HOT_CUE_A" },           /* L3.5 */
+    { 0, 0x02, "HOT_CUE_A_REC" },       /* L3.6 */
+    { 0, 0x04, "HOT_CUE_A_LOOP" },      /* L3.7 */
+    { 0, 0x08, "HOT_CUE_B" },           /* L3.2 */
+    { 0, 0x10, "HOT_CUE_B_REC" },       /* L3.3 */
+    { 0, 0x20, "HOT_CUE_B_LOOP" },      /* L3.4 */
+    { 0, 0x40, "HOT_CUE_C" },           /* L2.7 */
+    { 0, 0x80, "HOT_CUE_C_REC" },       /* L3.0 */
+    { 1, 0x01, "HOT_CUE_C_LOOP" },      /* L3.1 */
+    { 1, 0x02, "LOOP_IN" },             /* L2.0 */
+    { 1, 0x04, "LOOP_OUT" },            /* L2.1 */
+    { 1, 0x08, "SLIP" },                /* L0.1 */
+    { 1, 0x10, "QUANTIZE" },            /* L11.7 */
+    { 1, 0x40, "REV" },                 /* L2.2 */
+    { 1, 0x80, "SD_INDICATOR" },        /* L1.4 */
+    { 2, 0x02, "EJECT" },               /* L1.6, from EJECT with no disc */
+    { 2, 0x08, "MASTER_TEMPO" },        /* L1.7 */
+    { 2, 0x20, "CUE" },                 /* L2.3 */
+    { 2, 0x40, "PLAY_PAUSE" },          /* L2.4 */
+    { 2, 0x80, "RELOOP_EXIT" },         /* L2.5 */
+    { 3, 0x01, "TEMPO_RESET" },         /* L2.6 */
+    { 3, 0x02, "JOG_CDJ" },             /* L1.1 */
+    { 3, 0x04, "JOG_VINYL" },           /* L1.2 */
+    { 3, 0x10, "ROTARY_SELECTOR" },     /* L1.5 */
+    { 3, 0xc0, "SOURCE_REKORDBOX" },    /* L4 bits 7..6 */
+    { 4, 0x03, "SOURCE_DISC" },         /* L7 bits 1..0 */
+    { 4, 0x0c, "SOURCE_SD" },           /* L7 bits 3..2 */
+    { 4, 0x30, "SOURCE_USB" },          /* L7 bits 5..4 */
+    { 4, 0xc0, "SOURCE_LINK" },         /* L7 bits 7..6 */
+    { 5, 0x03, "BROWSE" },              /* L6 bits 1..0 */
+    { 5, 0x0c, "INFO" },                /* L6 bits 3..2 */
+    { 5, 0x30, "TAG_LIST" },            /* L6 bits 5..4 */
+    { 5, 0xc0, "MENU" },                /* L6 bits 7..6 */
+    { 6, 0xc0, "LOOP_MODE" },           /* L5 bits 7..6 */
+    { 8, 0x18, "JOG_DISPLAY_VINYL" },   /* L+35 bits 4..3, with JOG_VINYL */
+    { 8, 0x20, "JOG_DISPLAY_TOUCH" },   /* L+35 bit 2 */
+    { 8, 0x40, "JOG_DISPLAY_MEMORY" },  /* L+35 bit 1 */
+    { 13, 0x03, "SYNC" },               /* L4 bits 1..0 */
+    { 13, 0x0c, "MASTER" },             /* L4 bits 3..2 */
+};
+
+static const uint8_t nxs_lamp_bytes[] = { 0, 1, 2, 3, 4, 5, 6, 8, 11, 12, 13 };
+
 /* A lamp that toggled twice within this is blinking, not switching. */
 #define CDJ_LAMPS_BLINK_NS (1200 * 1000000LL)
 
@@ -103,8 +186,8 @@ CdjLampsMode cdj_lamps_mode(const char *panel_lamps, const char *input_port)
 const CdjPanelLamp *cdj_lamps_names(bool nxs, unsigned *count)
 {
     if (nxs) {
-        *count = 0;                     /* the NXS panel protocol is its own */
-        return NULL;
+        *count = sizeof(nxs_lamp_names) / sizeof(nxs_lamp_names[0]);
+        return nxs_lamp_names;
     }
     *count = sizeof(cdj2000_lamp_names) / sizeof(cdj2000_lamp_names[0]);
     return cdj2000_lamp_names;
@@ -117,13 +200,13 @@ void cdj_lamps_init(CdjLamps *lamps, bool nxs, CdjLampsMode mode)
     unsigned i;
 
     memset(lamps, 0, sizeof(*lamps));
-    lamps->mode = named ? mode : CDJ_LAMPS_OFF;
+    lamps->mode = mode;
     for (i = 0; i < named; i++) {
         lamps->track[lamps->count++].lamp = names[i];
     }
     if (lamps->mode == CDJ_LAMPS_LOG_ALL) {
-        const uint8_t *bytes = cdj2000_lamp_bytes;
-        unsigned nbytes = sizeof(cdj2000_lamp_bytes);
+        const uint8_t *bytes = nxs ? nxs_lamp_bytes : cdj2000_lamp_bytes;
+        unsigned nbytes = nxs ? sizeof(nxs_lamp_bytes) : sizeof(cdj2000_lamp_bytes);
         unsigned b, bit, j;
 
         for (b = 0; b < nbytes; b++) {
