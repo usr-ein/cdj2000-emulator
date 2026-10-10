@@ -10,6 +10,7 @@ licence of each.
 | `qemu-sh-intc-priority-imask.patch` | QEMU 11.x | `scripts/build-qemu-sh4.sh` |
 | `qemu-sh-intc-priority-order.patch` | QEMU 11.x, after the IMASK patch | `scripts/build-qemu-sh4.sh` |
 | `qemu-sh-tmu-stop-reset.patch` | QEMU 11.x | `scripts/build-qemu-sh4.sh` |
+| `qemu-main-loop-macos-hires.patch` | QEMU 11.x | `scripts/build-qemu-sh4.sh` |
 | `01-gdb-17.2-bfin-parallel-dsp32alu.patch` | GDB 17.2 | `scripts/build-bfin-sim.sh` |
 | `02-gdb-17.2-bfin-cdj2000-board.patch` | GDB 17.2 | `scripts/build-bfin-sim.sh` |
 
@@ -99,6 +100,22 @@ clears their interrupt levels, and restores the visible registers. Without this,
 a pending timer line can survive a guest reset and interrupt the new boot before
 it has initialized its handlers. Stopping a channel through `TSTR` leaves
 `TCR.UNF` (and so the line) as it is, as on the chip: software clears it.
+
+`qemu-main-loop-macos-hires.patch` is item 6 of the IMASK patch for macOS,
+which had no fix: there too `g_poll` takes whole milliseconds and rounds up,
+and macOS ends a 1 ms wait ~0.26 ms late. The 1 ms TMU0 tick was served every
+1.1 to 2 ms, and `ptimer`, which schedules each expiry from the previous one,
+caught up with two expiries in one main-loop pass, which the guest saw as one
+underflow. Measured on an M2 Pro, stock NXS 1.44, idle: 27% of TMU0's
+underflows merged (10 708 of 39 307 in 40 s; TMU4's 1 ms channel the same),
+so the RTOS counted ~730 ticks a second, and its 2 s Pro DJ Link keep-alive
+went out every 2.74 s of `QEMU_CLOCK_VIRTUAL`. The patch arms a one-shot
+kqueue timer (`EVFILT_TIMER`, `NOTE_NSECONDS | NOTE_CRITICAL`) for any wait
+under 4 ms and polls the kqueue alongside the other descriptors, as the
+Windows patch does with a waitable timer. Measured with it: 0 of 29 335 TMU0
+underflows merged in 30 s, the tick at its programmed 1 000 a second. A
+one-shot kqueue timer ends a `poll` 20-70 us after its deadline here.
+`CDJ_MAIN_LOOP_HIRES=0` switches it off, as on Windows.
 
 ### What each one costs
 
