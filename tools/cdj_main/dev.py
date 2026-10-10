@@ -5,6 +5,7 @@ Examples::
     python -m tools.cdj_main.dev runs/demo status --json
     python -m tools.cdj_main.dev runs/demo press sd
     python -m tools.cdj_main.dev runs/demo rotary 2
+    python -m tools.cdj_main.dev runs/demo lamps
     python -m tools.cdj_main.dev runs/demo qmp status
     python -m tools.cdj_main.dev runs/demo memory 0x1000 --length 64
     python -m tools.cdj_main.dev runs/demo stop
@@ -227,6 +228,27 @@ def rotary(run: Path, delta: int) -> int:
     _json({"ok": ok, "field": field,
            "delta": delta, "reply": reply})
     return 0 if ok else 1
+
+
+def lamps(run: Path) -> int:
+    """The panel lamps MAIN last lit, by name: what `state` reports, as JSON.
+
+    A lamp that is dark is left out; a two-bit lamp gives its level (1 is a
+    key that is available, 3 one that is on); "blink" is a lamp toggling."""
+    _require_running(run)
+    connection = _panel(run)
+    try:
+        reply = connection.send(panel_control.encode("state"))
+    finally:
+        connection.close()
+    if not _reply_ok(reply):
+        _action(run, "lamps", outcome="error", reply=reply)
+        _json({"ok": False, "reply": reply})
+        return 1
+    lit = panel_control.lamps_of(panel_control.parse_state(reply))
+    _action(run, "lamps", outcome="observed", lamps=lit)
+    _json({"ok": True, "lamps": lit})
+    return 0
 
 
 def qmp(run: Path, operation: str) -> int:
@@ -763,6 +785,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     switch_parser.add_argument("state", choices=("on", "off"))
     knob = sub.add_parser("rotary")
     knob.add_argument("delta", type=int)
+    sub.add_parser("lamps", help="the panel lamps MAIN last lit, by name")
     qmp_parser = sub.add_parser("qmp")
     qmp_parser.add_argument("operation", choices=("pause", "resume", "status", "registers"))
     memory_parser = sub.add_parser("memory")
@@ -829,6 +852,8 @@ def main(argv: list[str] | None = None) -> int:
             return switch(run, args.name, args.state == "on")
         if args.command == "rotary":
             return rotary(run, args.delta)
+        if args.command == "lamps":
+            return lamps(run)
         if args.command == "qmp":
             return qmp(run, args.operation)
         if args.command == "memory":
