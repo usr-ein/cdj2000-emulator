@@ -143,6 +143,27 @@ def test_rotary_uses_the_verified_encoder_field_and_signed_delta(tmp_path):
     panel.send.assert_called_once_with(panel_control.encode_rotary(7, -3))
 
 
+def test_lamps_reports_state_lamps_by_name(tmp_path, capsys):
+    run = _run(tmp_path)
+    panel = mock.Mock()
+    panel.send.return_value = ("ok state frames=9 commands=1 queue=0 phase=idle "
+                               "lamps=PLAY_PAUSE:blink,SOURCE_USB:3,MASTER:1 last_press=1:2-3")
+    with mock.patch.object(dev, "_panel", return_value=panel):
+        assert dev.main([str(run), "lamps"]) == 0
+    panel.send.assert_called_once_with("state\n")
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True,
+        "lamps": {"PLAY_PAUSE": "blink", "SOURCE_USB": "3", "MASTER": "1"}}
+    panel.send.return_value = "ok state frames=9 lamps=-"
+    with mock.patch.object(dev, "_panel", return_value=panel):
+        assert dev.main([str(run), "lamps"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "lamps": {}}
+    panel.send.return_value = "err unknown command"
+    with mock.patch.object(dev, "_panel", return_value=panel):
+        assert dev.main([str(run), "lamps"]) == 1
+    assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
 def test_mutation_is_refused_after_run_stops_and_logs_error(tmp_path, capsys):
     run = _run(tmp_path, state="stopped")
     assert dev.main([str(run), "press", "sd"]) == 2
