@@ -1741,4 +1741,6 @@ packets every 3-11 s instead of 0.345 s), MAIN waiting for the DSP 60-70% of
 its time, and the keep-alive interval rose to ~2.02 s. The stall the held
 clock fixed (the stream to the DSP stopping ~150 half frames after PLAY) did
 not recur in two runs: the counter kept advancing, and PLAY paused and
-resumed it.
+resumed it. It came at 80-85% (`main-wait` 8.0 s per 10 s, above, on a shared
+host), and that margin is what keeps it away on host time: a slower or busier
+host can bring it back, and `CDJ_NXS_DSP_HOST_TIME=0` keeps the hold for that.
