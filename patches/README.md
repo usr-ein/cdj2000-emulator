@@ -11,6 +11,7 @@ licence of each.
 | `qemu-sh-intc-priority-order.patch` | QEMU 11.x, after the IMASK patch | `scripts/build-qemu-sh4.sh` |
 | `qemu-sh-tmu-stop-reset.patch` | QEMU 11.x | `scripts/build-qemu-sh4.sh` |
 | `qemu-main-loop-macos-hires.patch` | QEMU 11.x | `scripts/build-qemu-sh4.sh` |
+| `qemu-sh-tmu-catch-up.patch` | QEMU 11.x, after the TMU reset patch | `scripts/build-qemu-sh4.sh` |
 | `01-gdb-17.2-bfin-parallel-dsp32alu.patch` | GDB 17.2 | `scripts/build-bfin-sim.sh` |
 | `02-gdb-17.2-bfin-cdj2000-board.patch` | GDB 17.2 | `scripts/build-bfin-sim.sh` |
 
@@ -116,6 +117,19 @@ Windows patch does with a waitable timer. Measured with it: 0 of 29 335 TMU0
 underflows merged in 30 s, the tick at its programmed 1 000 a second. A
 one-shot kqueue timer ends a `poll` 20-70 us after its deadline here.
 `CDJ_MAIN_LOOP_HIRES=0` switches it off, as on Windows.
+
+`qemu-sh-tmu-catch-up.patch` keeps the underflows the guest has not seen. A
+channel that underflows while `TCR.UNF` is still set, with its interrupt
+enabled, counts the underflow, and when the guest clears `UNF` the flag stays
+set until it has cleared it once for each: the ticks come late, but none is
+lost. On the chip a tick handler is never a period late; here the host
+decides when the timer's callback and the guest's handler run, and a host
+busy with other work keeps MAIN from its 1 ms tick for longer than that. At
+most 1 000 are kept; stopping the channel, `UNIE` clear or a reset drop them.
+Measured with the macOS patch, idle NXS, while twelve busy processes held all
+twelve cores of an M2 Pro for 30 s: keep-alive intervals of 3.4-4.2 s (mean
+2.51 s over the 70 s window) without it, 2.1-3.2 s (mean 2.14 s) with it;
+2.00 s before and after the burst either way.
 
 ### What each one costs
 

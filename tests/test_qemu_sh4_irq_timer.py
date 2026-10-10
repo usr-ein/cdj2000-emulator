@@ -114,6 +114,35 @@ def test_tmu_stop_keeps_underflow_and_reset_restores_registers():
         assert request('readb 0xffd80004') == 0
 
 
+def test_tmu_keeps_underflows_the_guest_has_not_seen():
+    """qemu-sh-tmu-catch-up.patch: each underflow is one interrupt."""
+    with machine(bytes(64), virtual_clock=True) as (request, execute):
+        # P-phi/4 is 13.5 MHz on this board: TCOR 13499 is a 1 ms tick.
+        request('writel 0xffd80008 13499')
+        request('writel 0xffd8000c 13499')
+        request('writew 0xffd80010 0x20')  # TCR.UNIE
+        request('writeb 0xffd80004 1')
+        request('clock_step 3500000')  # three underflows, none acknowledged
+
+        def clears_until_unf_is_clear():
+            clears = 0
+            while request('readw 0xffd80010') & 0x100:
+                request('writew 0xffd80010 0x20')
+                clears += 1
+                assert clears <= 5
+            return clears
+
+        # UNF stays set until the guest has cleared it once for each.
+        assert clears_until_unf_is_clear() == 3
+        request('clock_step 1000000')
+        assert clears_until_unf_is_clear() == 1
+
+        # Stopping the channel drops what it kept; UNF stays until cleared.
+        request('clock_step 3000000')
+        request('writeb 0xffd80004 0')
+        assert clears_until_unf_is_clear() == 1
+
+
 def _priority_rom():
     # Boot with SR.BL set. Poll a RAM word until the test has observed both
     # pending TMU flags, then clear BL so the first accepted vector is stable.
