@@ -462,6 +462,58 @@ def test_a_client_that_hangs_up_cleanly_is_replaced(harness):
     assert len(runs_of(frames, 19, 0x08)) == 1
 
 
+def clients_trace(harness: Path) -> tuple[list[bytes], list[str]]:
+    """The `clients` scenario: its frames, and what each of its clients heard."""
+    settings = environment()
+    settings["CDJ_INPUT_PORT"] = str(free_port())
+    finished = subprocess.run([str(harness), "clients"], capture_output=True,
+                              text=True, timeout=60, env=settings)
+    assert finished.returncode == 0, finished.stderr
+    lines = finished.stdout.splitlines()
+    frames = [bytes.fromhex(line.split(" ", 3)[3]) for line in lines
+              if line.startswith("f ")]
+    return frames, [line for line in lines if line.startswith("# client")]
+
+
+def test_two_clients_are_served_side_by_side(harness):
+    """A window polling `state` beside a script pressing keys.
+
+    With one connection at a time, each newcomer closed the one before it, so
+    a viewer that polled knocked a script's press off the channel between its
+    command and its answer.  Now both stay connected, each hears its own
+    answers and nobody else's, and the presses of both reach the payload.
+    """
+    frames, heard = clients_trace(harness)
+    assert heard[:2] == ["# client1: ok cdj2000-input",
+                         "# client2: ok cdj2000-input"]
+    assert heard[2:8] == ["# client1 says press 19 02",
+                          "# client1: ok press id=1",
+                          "# client2 says state",
+                          heard[5],
+                          "# client2 says press 18 01",
+                          "# client2: ok press id=2"]
+    assert heard[5].startswith("# client2: ok state ")
+    assert heard[8:10] == ["# client1 says ping", "# client1: ok pong"]
+    assert len(runs_of(frames, 19, 0x02)) == 1
+    assert len(runs_of(frames, 18, 0x01)) == 1
+
+
+def test_a_connection_beyond_the_limit_takes_the_oldest_ones_place(harness):
+    """r089's rule still holds with several places: a newcomer always gets in.
+
+    The fifth connection finds the four places taken and takes the first
+    one's, which is closed; the others keep being answered.
+    """
+    _, heard = clients_trace(harness)
+    rest = heard[10:]
+    assert rest[:3] == ["# client3: ok cdj2000-input",
+                        "# client4: ok cdj2000-input",
+                        "# client5: ok cdj2000-input"]
+    assert rest[3:] == ["# client1 closed",
+                        "# client2 says ping", "# client2: ok pong",
+                        "# client5 says ping", "# client5: ok pong"]
+
+
 def test_a_refused_command_changes_nothing(harness):
     frames = run(harness, "bad")
     assert all(payload == bytes(PAYLOAD_LEN) for payload in frames)

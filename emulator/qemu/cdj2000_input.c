@@ -31,6 +31,13 @@
  * with "ok ..." or "err ...".  Line-oriented on purpose: it can be driven from
  * panel_control.py, from a test, or by hand.
  *
+ * Up to CDJ_INPUT_CLIENTS connections are served at once -- a window polling
+ * `state` for the lamps while a script presses keys, say -- each with a line
+ * buffer of its own, and every answer goes to the connection that asked.  What
+ * they drive is the one panel: held bits, the press queue and the analogue
+ * fields are shared, as a real deck's buttons are by two hands.  A connection
+ * beyond the limit takes the place of the oldest one (see cdj_input_accept).
+ *
  *   ping                      -> ok pong
  *   press <byte> <mask> [ms [gap]]  queue one down/up pulse, mask is hex;
  *                             GAP is the quiet time after it (default: the
@@ -88,6 +95,7 @@
 
 #define CDJ_INPUT_QUEUE 32
 #define CDJ_INPUT_LINE 512
+#define CDJ_INPUT_CLIENTS 4
 
 typedef struct CdjInputPress {
     unsigned byte;
@@ -171,12 +179,22 @@ static const struct {
 };
 
 static int cdj_input_listen_fd = -1;
-static int cdj_input_client_fd = -1;
 static bool cdj_input_opened;
 
-static char cdj_input_line[CDJ_INPUT_LINE];
-static unsigned cdj_input_fill;
-static bool cdj_input_overlong;
+typedef struct CdjInputClient {
+    int fd;                             /* -1: a free slot */
+    uint64_t serial;                    /* the order it was accepted in */
+    char line[CDJ_INPUT_LINE];
+    unsigned fill;
+    bool overlong;
+} CdjInputClient;
+
+static CdjInputClient cdj_input_clients[CDJ_INPUT_CLIENTS] = {
+    [0 ... CDJ_INPUT_CLIENTS - 1] = { .fd = -1 },
+};
+static uint64_t cdj_input_accepted;
+/* The connection whose command is being carried out: answers go to it. */
+static CdjInputClient *cdj_input_client;
 
 static CdjInputPress cdj_input_queue[CDJ_INPUT_QUEUE];
 static unsigned cdj_input_queue_head;
@@ -262,12 +280,12 @@ static void cdj_input_reply(const char *text)
     size_t left;
     size_t done = 0;
 
-    if (cdj_input_client_fd < 0) {
+    if (!cdj_input_client || cdj_input_client->fd < 0) {
         return;
     }
     left = strlen(text);
     while (done < left) {
-        ssize_t wrote = send(cdj_input_client_fd, text + done,
+        ssize_t wrote = send(cdj_input_client->fd, text + done,
                              (int)(left - done), 0);
 
         if (wrote > 0) {
@@ -289,16 +307,16 @@ static void cdj_input_reply(const char *text)
  * rare enough that logging every one costs nothing and turns the next
  * occurrence into a measurement instead of a guess.
  */
-static void cdj_input_drop_client(const char *why)
+static void cdj_input_drop_client(CdjInputClient *client, const char *why)
 {
-    if (cdj_input_client_fd >= 0) {
-        info_report("cdj2000-input: client dropped after %" PRIu64
-                    " commands: %s", cdj_input_commands, why);
-        close(cdj_input_client_fd);
-        cdj_input_client_fd = -1;
+    if (client->fd >= 0) {
+        info_report("cdj2000-input: client %" PRIu64 " dropped after %" PRIu64
+                    " commands: %s", client->serial, cdj_input_commands, why);
+        close(client->fd);
+        client->fd = -1;
     }
-    cdj_input_fill = 0;
-    cdj_input_overlong = false;
+    client->fill = 0;
+    client->overlong = false;
 }
 
 static void cdj_input_open(void)
@@ -331,7 +349,7 @@ static void cdj_input_open(void)
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     address.sin_port = htons((uint16_t)port);
     if (bind(fd, (struct sockaddr *)&address, sizeof(address)) < 0
-        || listen(fd, 1) < 0) {
+        || listen(fd, CDJ_INPUT_CLIENTS) < 0) {
         warn_report("cdj2000-input: cannot listen on 127.0.0.1:%ld: %s",
                     port, strerror(errno));
         close(fd);
@@ -754,43 +772,43 @@ static void cdj_input_command(char *line)
 
 /* ------------------------------------------------------------------- poll */
 
-static void cdj_input_consume(void)
+static void cdj_input_consume(CdjInputClient *client)
 {
     unsigned start = 0;
     unsigned i;
 
-    for (i = 0; i < cdj_input_fill; i++) {
-        char c = cdj_input_line[i];
+    for (i = 0; i < client->fill; i++) {
+        char c = client->line[i];
 
         if (c != '\n' && c != '\r') {
             continue;
         }
-        cdj_input_line[i] = 0;
-        if (cdj_input_overlong) {
+        client->line[i] = 0;
+        if (client->overlong) {
             /* The tail of a line already refused; do not act on half of it. */
-            cdj_input_overlong = false;
+            client->overlong = false;
         } else if (i > start) {
-            cdj_input_command(cdj_input_line + start);
+            cdj_input_command(client->line + start);
         }
         start = i + 1;
     }
     if (start) {
-        memmove(cdj_input_line, cdj_input_line + start, cdj_input_fill - start);
-        cdj_input_fill -= start;
+        memmove(client->line, client->line + start, client->fill - start);
+        client->fill -= start;
     }
-    if (cdj_input_fill + 1 >= sizeof(cdj_input_line)) {
+    if (client->fill + 1 >= sizeof(client->line)) {
         /*
          * No terminator in a full buffer: refuse the line rather than execute
          * an arbitrary prefix of it, and swallow the rest until the newline.
          */
-        cdj_input_fill = 0;
-        cdj_input_overlong = true;
+        client->fill = 0;
+        client->overlong = true;
         cdj_input_reply("err line too long\n");
     }
 }
 
 /*
- * Take whoever is knocking, even when a client is already attached.
+ * Take whoever is knocking, even when every slot is taken.
  *
  * This is the lesson of r089.  The channel died between a command at t=20 and
  * one at t=150 -- from the guest, with a cause that does not reproduce on the
@@ -799,9 +817,11 @@ static void cdj_input_consume(void)
  * lost connection ended input for the rest of the run, and every queued
  * measurement after it would have read as "the key does nothing".
  *
- * Newest wins, and the old one is closed rather than left dangling.  A control
- * channel that cannot be reconnected to is a design defect on its own, whatever
- * closed it.
+ * So a newcomer always gets in.  It takes a free slot if there is one, and
+ * otherwise the place of the oldest connection, which is closed rather than
+ * left dangling: a half-dead connection the board still believes in is more
+ * likely the oldest than the newest.  A control channel that cannot be
+ * reconnected to is a design defect on its own, whatever closed it.
  */
 /*
  * QEMU's Windows socket wrappers have one path that returns -1 **without
@@ -831,17 +851,21 @@ static bool cdj_input_would_block(void)
 
 static void cdj_input_reopen(const char *why)
 {
+    unsigned i;
+
     warn_report("cdj2000-input: %s -- reopening the control channel", why);
-    if (cdj_input_client_fd >= 0) {
-        close(cdj_input_client_fd);
-        cdj_input_client_fd = -1;
+    for (i = 0; i < CDJ_INPUT_CLIENTS; i++) {
+        if (cdj_input_clients[i].fd >= 0) {
+            close(cdj_input_clients[i].fd);
+            cdj_input_clients[i].fd = -1;
+        }
+        cdj_input_clients[i].fill = 0;
+        cdj_input_clients[i].overlong = false;
     }
     if (cdj_input_listen_fd >= 0) {
         close(cdj_input_listen_fd);
         cdj_input_listen_fd = -1;
     }
-    cdj_input_fill = 0;
-    cdj_input_overlong = false;
     /* cdj_input_open() binds again on the next exchange; the listening socket
      * is opened with SO_REUSEADDR, so the port is not held against us. */
     cdj_input_opened = false;
@@ -849,43 +873,56 @@ static void cdj_input_reopen(const char *why)
 
 static void cdj_input_accept(void)
 {
-    int fd;
+    for (;;) {
+        CdjInputClient *slot = NULL;
+        unsigned i;
+        int fd;
 
-    errno = 0;
-    fd = accept(cdj_input_listen_fd, NULL, NULL);
-    if (fd < 0) {
-        if (cdj_input_would_block() || errno == ECONNABORTED) {
-            return;             /* nobody knocking, which is the normal case */
+        errno = 0;
+        fd = accept(cdj_input_listen_fd, NULL, NULL);
+        if (fd < 0) {
+            if (cdj_input_would_block() || errno == ECONNABORTED) {
+                return;         /* nobody knocking, which is the normal case */
+            }
+            if (errno == 0) {
+                cdj_input_reopen("the listening socket is no longer a socket");
+            } else {
+                warn_report("cdj2000-input: accept failed, errno %d", errno);
+            }
+            return;
         }
-        if (errno == 0) {
-            cdj_input_reopen("the listening socket is no longer a socket");
-        } else {
-            warn_report("cdj2000-input: accept failed, errno %d", errno);
+        for (i = 0; i < CDJ_INPUT_CLIENTS; i++) {
+            CdjInputClient *client = &cdj_input_clients[i];
+
+            if (client->fd < 0) {
+                slot = client;
+                break;
+            }
+            if (!slot || client->serial < slot->serial) {
+                slot = client;
+            }
         }
-        return;
+        if (slot->fd >= 0) {
+            cdj_input_drop_client(slot, "replaced by a new connection");
+        }
+        qemu_set_blocking(fd, false, NULL);
+        socket_set_nodelay(fd);
+        slot->fd = fd;
+        slot->serial = ++cdj_input_accepted;
+        slot->fill = 0;
+        slot->overlong = false;
+        cdj_input_client = slot;
+        cdj_input_reply("ok cdj2000-input\n");
+        cdj_input_client = NULL;
     }
-    if (cdj_input_client_fd >= 0) {
-        cdj_input_drop_client("replaced by a new connection");
-    }
-    qemu_set_blocking(fd, false, NULL);
-    socket_set_nodelay(fd);
-    cdj_input_client_fd = fd;
-    cdj_input_fill = 0;
-    cdj_input_overlong = false;
-    cdj_input_reply("ok cdj2000-input\n");
 }
 
-static void cdj_input_poll(void)
+/* Everything one connection has sent since the last exchange. */
+static void cdj_input_serve(CdjInputClient *client)
 {
-    if (!cdj_input_opened) {
-        cdj_input_open();
-    }
-    if (cdj_input_listen_fd < 0) {
-        return;
-    }
-    cdj_input_accept();
-    while (cdj_input_client_fd >= 0) {
-        size_t space = sizeof(cdj_input_line) - cdj_input_fill - 1;
+    cdj_input_client = client;
+    while (client->fd >= 0) {
+        size_t space = sizeof(client->line) - client->fill - 1;
         ssize_t got;
 
         if (space == 0) {
@@ -894,44 +931,61 @@ static void cdj_input_poll(void)
              * closed peer reports itself -- so asking for nothing would look
              * exactly like a hang-up and take the connection down.
              */
-            cdj_input_fill = 0;
-            cdj_input_overlong = true;
+            client->fill = 0;
+            client->overlong = true;
             cdj_input_reply("err line too long\n");
             continue;
         }
         errno = 0;
-        got = recv(cdj_input_client_fd, cdj_input_line + cdj_input_fill,
-                   (int)space, 0);
+        got = recv(client->fd, client->line + client->fill, (int)space, 0);
         if (got > 0) {
-            cdj_input_fill += got;
-            cdj_input_consume();
+            client->fill += got;
+            cdj_input_consume(client);
             continue;
         }
         if (got == 0) {
-            cdj_input_drop_client("peer closed the connection");
-            return;
+            cdj_input_drop_client(client, "peer closed the connection");
+            break;
         }
         if (cdj_input_would_block()) {
-            return;         /* nothing pending, which is the normal case */
+            break;          /* nothing pending, which is the normal case */
         }
         if (errno == 0) {
             /* See cdj_input_accept: the wrapper gave up before the syscall,
              * so this descriptor is not a socket any more. */
-            cdj_input_drop_client("the client socket is no longer a socket");
-            return;
+            cdj_input_drop_client(client,
+                                  "the client socket is no longer a socket");
+            break;
         }
         /*
          * Anything else is a real socket error.  Drop it -- but the accept
-         * above means a client can always come back, so this is no longer the
-         * end of input for the run.
+         * before this means a client can always come back, so this is no
+         * longer the end of input for the run.
          */
         {
             char reason[64];
 
             snprintf(reason, sizeof(reason), "recv failed, errno %d", errno);
-            cdj_input_drop_client(reason);
+            cdj_input_drop_client(client, reason);
         }
+        break;
+    }
+    cdj_input_client = NULL;
+}
+
+static void cdj_input_poll(void)
+{
+    unsigned i;
+
+    if (!cdj_input_opened) {
+        cdj_input_open();
+    }
+    if (cdj_input_listen_fd < 0) {
         return;
+    }
+    cdj_input_accept();
+    for (i = 0; i < CDJ_INPUT_CLIENTS && cdj_input_listen_fd >= 0; i++) {
+        cdj_input_serve(&cdj_input_clients[i]);
     }
 }
 

@@ -234,6 +234,63 @@ static int harness_connect(int port)
 }
 
 /*
+ * One line for a connection of a scenario's own (not harness_client), the
+ * board served meanwhile without advancing the clock: 1 with the line, 0 when
+ * the board has closed the connection, -1 when nothing came within a second.
+ */
+static int harness_line(int fd, char *line, size_t size)
+{
+    gint64 deadline = g_get_monotonic_time() + G_USEC_PER_SEC;
+    size_t fill = 0;
+
+    while (g_get_monotonic_time() < deadline) {
+        char ch;
+        ssize_t got;
+
+        cdj_input_poll();
+        got = recv(fd, &ch, 1, 0);
+        if (got == 0) {
+            return 0;
+        }
+        if (got < 0) {
+            harness_sleep_ms(1);
+            continue;
+        }
+        if (ch == '\n') {
+            line[fill] = 0;
+            return 1;
+        }
+        if (ch != '\r' && fill + 1 < size) {
+            line[fill++] = ch;
+        }
+    }
+    return -1;
+}
+
+/* What `name` hears next: "# NAME: <line>", "# NAME closed" or "# NAME silent". */
+static void harness_hear(int fd, const char *name)
+{
+    char line[4096];
+    int got = harness_line(fd, line, sizeof(line));
+
+    if (got > 0) {
+        printf("# %s: %s\n", name, line);
+    } else {
+        printf("# %s %s\n", name, got == 0 ? "closed" : "silent");
+    }
+}
+
+static void harness_tell(int fd, const char *name, const char *text)
+{
+    char buffer[256];
+
+    printf("# %s says %s\n", name, text);
+    snprintf(buffer, sizeof(buffer), "%s\n", text);
+    send(fd, buffer, strlen(buffer), 0);
+    harness_hear(fd, name);
+}
+
+/*
  * Send a command, allowing loopback delivery before the caller's panel frames.
  * This delay is not a reply deadline: script segments additionally wait for a
  * complete acknowledgment without advancing the simulated clock.
@@ -401,6 +458,44 @@ int main(int argc, char **argv)
         command("press 19 08");
         frames(8);
         close(abandoned);
+    } else if (!strcmp(scenario, "clients")) {
+        /*
+         * A viewer polling `state` beside a script pressing keys, as a window
+         * and a command line share a running machine.  Both stay connected,
+         * each hears its own answers, and the presses of both land.  Then more
+         * connections arrive than there are places: the oldest is closed to
+         * make room, and the newest is answered like the others.
+         */
+        int client[CDJ_INPUT_CLIENTS + 1];
+        char name[16];
+        int i;
+
+        close(harness_client);          /* this scenario's clients are its own */
+        harness_client = -1;
+        frame();
+        for (i = 0; i < 2; i++) {
+            client[i] = harness_connect(atoi(port));
+            snprintf(name, sizeof(name), "client%d", i + 1);
+            harness_hear(client[i], name);
+        }
+        harness_tell(client[0], "client1", "press 19 02");
+        harness_tell(client[1], "client2", "state");
+        frames(4);
+        harness_tell(client[1], "client2", "press 18 01");
+        harness_tell(client[0], "client1", "ping");
+        frames(8);
+        for (i = 2; i <= CDJ_INPUT_CLIENTS; i++) {
+            client[i] = harness_connect(atoi(port));
+            snprintf(name, sizeof(name), "client%d", i + 1);
+            harness_hear(client[i], name);
+        }
+        harness_hear(client[0], "client1");
+        harness_tell(client[1], "client2", "ping");
+        snprintf(name, sizeof(name), "client%d", CDJ_INPUT_CLIENTS + 1);
+        harness_tell(client[CDJ_INPUT_CLIENTS], name, "ping");
+        for (i = 0; i <= CDJ_INPUT_CLIENTS; i++) {
+            close(client[i]);
+        }
     } else if (!strcmp(scenario, "reply-timeout")) {
         harness_wait_reply(1);  /* no command was sent; must fail, not pass */
     } else if (!strcmp(scenario, "reply-fragments")) {
