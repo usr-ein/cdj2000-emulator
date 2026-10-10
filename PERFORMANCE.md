@@ -1703,3 +1703,37 @@ cursor-advance loop, the board's per-slot work, the MAIN hand-over) did not
 get faster; the replay gains are in the memcpy and the loop machinery the
 decoder uses, which only run once the background gets time.  E-8302 stays.
 Real time needs ~2.5x on the playing ISR mix as well as the background.
+
+## MAIN's clock on host time again (`--dsp-thread`, 2026-10-10)
+
+`CDJ_NXS_DSP_HOST_TIME` now defaults to on: QEMU_CLOCK_VIRTUAL keeps
+running while MAIN waits for the DSP thread, as before "Virtual time held
+while MAIN waits for the DSP"; `CDJ_NXS_DSP_HOST_TIME=0`
+(`nxs_vm --no-dsp-host-time`) holds it as that section does.
+
+**Why.** The held clock makes MAIN's time run slower than the wall clock,
+and with it everything MAIN times, which on a Pro DJ Link segment is what
+other players see. Stock NXS 1.44, idle with no media, on an Apple M2 Pro,
+the DSP thread at its defaults (JIT on, idle skip, no functional audio):
+
+| | keep-alive interval (wall) | MAIN waiting |
+| --- | ---: | ---: |
+| held clock | 3.112 s (183 intervals, 10 min) | 11% of virtual time |
+| held clock, macOS main-loop fix (`patches/README.md`) | 2.370 s | 17% |
+| host time, macOS main-loop fix | 2.000 s (sd 0.4 ms) | 16% of wall time |
+
+A real NXS sends its keep-alive every 2.003 s (`S01-cold-boot-a` in
+TriMixxx's prolink captures). Idle, MAIN makes ~12K HPI accesses a second
+(fixed-address data reads and writes, address writes, HPIC), each waiting
+~15 us for the DSP thread's 256 packets and the lock hand-over. On host time
+those waits are MAIN's loss instead of the clock's: ~16% of its time, on an
+SH-4 translation several times faster than the SH7764 (`docs/
+SH4_TCG_FAST_PATHS.md`), and its tick, tasks and network keep their rates.
+
+**Playback** with `--functional-dsp-audio` stays bound by the interpreter
+either way: on this host a 174 BPM track played at 0.04-0.09x (its beat
+packets every 3-11 s instead of 0.345 s), MAIN waiting for the DSP 60-70% of
+its time, and the keep-alive interval rose to ~2.02 s. The stall the held
+clock fixed (the stream to the DSP stopping ~150 half frames after PLAY) did
+not recur in two runs: the counter kept advancing, and PLAY paused and
+resumed it.
