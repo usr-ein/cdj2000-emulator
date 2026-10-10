@@ -1713,17 +1713,22 @@ while MAIN waits for the DSP"; `CDJ_NXS_DSP_HOST_TIME=0`
 
 **Why.** The held clock makes MAIN's time run slower than the wall clock,
 and with it everything MAIN times, which on a Pro DJ Link segment is what
-other players see. Stock NXS 1.44, idle with no media, on an Apple M2 Pro,
-the DSP thread at its defaults (JIT on, idle skip, no functional audio):
+other players see. Stock NXS 1.44, idle with no media, on an Apple M2 Pro
+(macOS), the DSP thread at its defaults (JIT on, idle skip, no functional
+audio), 150 s alone on a link:
 
-| | keep-alive interval (wall) | MAIN waiting |
-| --- | ---: | ---: |
-| held clock | 3.112 s (183 intervals, 10 min) | 11% of virtual time |
-| held clock, macOS main-loop fix (`patches/README.md`) | 2.370 s | 17% |
-| host time, macOS main-loop fix | 2.000 s (sd 0.4 ms) | 16% of wall time |
+| | keep-alive interval (wall) | QEMU_CLOCK_VIRTUAL / wall | MAIN waiting for the DSP |
+| --- | ---: | ---: | ---: |
+| held clock | 3.096 s | 0.883 | 12% of virtual time |
+| host time | 2.772 s (median 2.665) | 1.000 | 12% |
+| held clock, macOS main-loop patch | 2.389 s | 0.838 | 18% |
+| host time, macOS main-loop patch | 2.0025 s (median 2.0001) | 1.000 | 16% |
 
 A real NXS sends its keep-alive every 2.003 s (`S01-cold-boot-a` in
-TriMixxx's prolink captures). Idle, MAIN makes ~12K HPI accesses a second
+TriMixxx's prolink captures). On host time the rest of the gap is macOS's:
+QEMU's main loop there waits in whole milliseconds and the RTOS loses about a
+quarter of its 1 ms ticks, which the macOS main-loop patch (a separate change
+against `main`) fixes. Idle, MAIN makes ~10K HPI accesses a second
 (fixed-address data reads and writes, address writes, HPIC), each waiting
 ~15 us for the DSP thread's 256 packets and the lock hand-over. On host time
 those waits are MAIN's loss instead of the clock's: ~16% of its time, on an

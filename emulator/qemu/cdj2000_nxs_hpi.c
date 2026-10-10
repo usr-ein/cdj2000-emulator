@@ -342,12 +342,12 @@ static NxsDspThread dsp_thread;
  *
  * It is no longer the default: a held clock is MAIN's time running slower
  * than the wall clock, and everything MAIN times does too.  Idle, with no
- * track, MAIN waits ~11K times a virtual second, ~15 us each, and its 2 s
- * Pro DJ Link keep-alive went out every 2.37 s of wall time (with the macOS
- * main-loop fix; 3.11 s before it) where a real NXS's comes every 2.003 s.
- * Charged to the wall clock, as before the hold, the keep-alive comes every
- * 2.000 s, and MAIN loses the waits instead: ~16% of its time idle, against
- * an SH-4 translation several times faster than the SH7764.  Playback with
+ * track, MAIN waits ~10K times a virtual second, ~15 us each, and its 2 s
+ * Pro DJ Link keep-alive went out every 3.10 s of wall time (2.39 s with the
+ * macOS main-loop fix) where a real NXS's comes every 2.003 s.  Charged to
+ * the wall clock, as before the hold, it comes every 2.77 s (2.00 s with that
+ * fix), and MAIN loses the waits instead: ~16% of its time idle, against an
+ * SH-4 translation several times faster than the SH7764.  Playback with
  * --functional-dsp-audio is bound by the interpreter either way.
  * The synchronous modes are left alone: holding the clock while the DSP runs
  * inside MAIN's DSPINT write (zero cost, or the packets at 150 Mpps) slowed
